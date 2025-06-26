@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates id="template" xml:space="preserve">
+
+    <t t-name="pos_retail.ButtonSetPickingType">
+        <button class="control-button o_pricelist_button btn btn-light rounded-0 fw-bolder"
+                t-on-click="() => this.click()">
+            <i class="fa fa-exchange me-1" role="img" aria-label="Set Operation Type" title="Set Operation Type" />
+            <span t-out="currentPickingTypeName"/>
+        </button>
+    </t>
+
+</templates>

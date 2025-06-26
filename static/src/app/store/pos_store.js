@@ -32,18 +32,20 @@ patch(PosStore.prototype, {
     async _processData(loadedData) {
         const config = loadedData["pos.config"]
         const res = await super._processData(...arguments);
+        const pickingTypes = loadedData.stock_picking_type || []
         if (config.multi_stock_operation_type) {
-            this.stock_picking_type_by_id = {};
-            if (loadedData["stock.picking.type"]) {
-                loadedData["stock.picking.type"].forEach(pt => {
-                    this.stock_picking_type_by_id[pt.id] = pt;
-                });
-            }
+            this.stock_picking_type_by_id = {}
+            pickingTypes.forEach(pt => {
+                this.stock_picking_type_by_id[pt.id] = pt
+            })
         }
         if (config.display_onhand) {
-            this.stock_location_ids = [loadedData["stock.picking.type"]['default_location_src_id'][0]]
-            this.default_location_src_id = loadedData["stock.picking.type"]['default_location_src_id'][0]
-            this._save_stock_location(loadedData["stock.location"])
+            const locId = pickingTypes[0]?.default_location_src_id?.[0]
+            if (locId) {
+                this.stock_location_ids = [locId]
+                this.default_location_src_id = locId
+                this._save_stock_location(loadedData.stock_location || [])
+            }
         }
         this.product_by_barcode = {}
         if (config.product_multi_barcode) {

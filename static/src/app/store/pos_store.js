@@ -33,12 +33,21 @@ patch(PosStore.prototype, {
         const config = loadedData["pos.config"]
         const res = await super._processData(...arguments);
         if (config.multi_stock_operation_type) {
+            // En tu patch de _processData, justo antes del forEach:
+            console.log("loadedData['stock.picking.type']:", loadedData["stock.picking.type"]);
+            console.log("loadedData.stock_picking_type:", loadedData.stock_picking_type);
+
             this.stock_picking_type_by_id = {};
-            if (loadedData["stock.picking.type"]) {
-                loadedData["stock.picking.type"].forEach(pt => {
+            
+            const pickingTypes = loadedData.stock_picking_type || [];
+            if (!pickingTypes.length) {
+                console.warn("No se cargaron tipos de picking:", pickingTypes);
+            } else {
+                pickingTypes.forEach(pt => {
                     this.stock_picking_type_by_id[pt.id] = pt;
                 });
             }
+
         }
         if (config.display_onhand) {
             this.stock_location_ids = [loadedData["stock.picking.type"]['default_location_src_id'][0]]

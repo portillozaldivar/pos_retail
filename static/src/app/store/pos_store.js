@@ -34,16 +34,24 @@ patch(PosStore.prototype, {
         const res = await super._processData(...arguments);
         if (config.multi_stock_operation_type) {
             this.stock_picking_type_by_id = {};
-            if (loadedData["stock.picking.type"]) {
-                loadedData["stock.picking.type"].forEach(pt => {
+            let pickingTypes = loadedData["stock.picking.type"];
+            if (pickingTypes) {
+                if (!Array.isArray(pickingTypes)) {
+                    pickingTypes = Object.values(pickingTypes);
+                }
+                pickingTypes.forEach((pt) => {
                     this.stock_picking_type_by_id[pt.id] = pt;
                 });
             }
         }
         if (config.display_onhand) {
-            this.stock_location_ids = [loadedData["stock.picking.type"]['default_location_src_id'][0]]
-            this.default_location_src_id = loadedData["stock.picking.type"]['default_location_src_id'][0]
-            this._save_stock_location(loadedData["stock.location"])
+            const pickingTypes = loadedData["stock.picking.type"];
+            const firstType = Array.isArray(pickingTypes) ? pickingTypes[0] : pickingTypes;
+            if (firstType && firstType.default_location_src_id) {
+                this.stock_location_ids = [firstType.default_location_src_id[0]];
+                this.default_location_src_id = firstType.default_location_src_id[0];
+            }
+            this._save_stock_location(loadedData["stock.location"]);
         }
         this.product_by_barcode = {}
         if (config.product_multi_barcode) {

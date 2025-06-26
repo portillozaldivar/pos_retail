@@ -1,124 +1,157 @@
-/** @odoo-module */
+/** @odoo-module **/
 
-import {patch} from "@web/core/utils/patch";
-import {PosStore} from "@point_of_sale/app/store/pos_store";
+import { patch } from "@web/core/utils/patch";
+import { PosStore } from "@point_of_sale/app/store/pos_store";
 
-const indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB || window.shimIndexedDB;
+const indexedDB =
+  window.indexedDB ||
+  window.mozIndexedDB ||
+  window.webkitIndexedDB ||
+  window.msIndexedDB ||
+  window.shimIndexedDB;
 if (!indexedDB) {
-    window.alert("Your browser doesn't support a stable version of IndexedDB.")
+  window.alert("Your browser doesn't support a stable version of IndexedDB.");
 }
 
 patch(PosStore.prototype, {
 
+  async load_server_data() {
+    const res = await super.load_server_data();
+    if (this.config.display_onhand) {
+      const product_onhand_peer_location =
+        await this.get_stock_datas_by_locationIds([], this.stock_location_ids);
+      if (product_onhand_peer_location) {
+        this.save_product_onhand_by_location(product_onhand_peer_location);
+      }
+    }
+    return res;
+  },
 
-    async load_server_data() {
-        const res = await super.load_server_data()
-        if (this.config.display_onhand) {
-            const product_onhand_peer_location = await this.get_stock_datas_by_locationIds([], this.stock_location_ids)
-            if (product_onhand_peer_location) {
-                this.save_product_onhand_by_location(product_onhand_peer_location)
-            }
-        }
-        return res
-    },
+  async closePos() {
+    const closing_process = await super.closePos();
+    if (this.user.pos_logout_direct) {
+      return (window.location = "/web/session/logout");
+    }
+    return closing_process;
+  },
 
-    async closePos() {
-        const closing_process = await super.closePos()
-        if (this.user.pos_logout_direct) {
-            return window.location = '/web/session/logout'
-        }
-    },
+  async _processData(loadedData) {
+    // 1) Invocamos al padre para llenar todo lo básico
+    const res = await super._processData(loadedData);
 
-    async _processData(loadedData) {
-        const config = loadedData["pos.config"]
-        const res = await super._processData(...arguments);
-        if (config.multi_stock_operation_type) {
-            // En tu patch de _processData, justo antes del forEach:
-            console.log("loadedData['stock.picking.type']:", loadedData["stock.picking.type"]);
-            console.log("loadedData.stock_picking_type:", loadedData.stock_picking_type);
+    // 2) Obtenemos la configuración de POS
+    const config = loadedData["pos.config"];
 
-            this.stock_picking_type_by_id = {};
-            
-            const pickingTypes = loadedData.stock_picking_type || [];
-            if (!pickingTypes.length) {
-                console.warn("No se cargaron tipos de picking:", pickingTypes);
-            } else {
-                pickingTypes.forEach(pt => {
-                    this.stock_picking_type_by_id[pt.id] = pt;
-                });
-            }
+    // 3) Solo cargamos los picking types seleccionados
+    if (
+      config.multi_stock_operation_type &&
+      config.multi_stock_operation_type_ids &&
+      config.multi_stock_operation_type_ids.length
+    ) {
+      const selectedIds = config.multi_stock_operation_type_ids;
+      // 4) Pedimos al servidor solo esos records
+      const pickingTypes = await this._rpc({
+        model: "stock.picking.type",
+        method: "read",
+        args: [selectedIds, ["id", "name", "default_location_src_id"]],
+      });
+      // 5) Mapeamos id → objeto
+      this.stock_picking_type_by_id = {};
+      pickingTypes.forEach((pt) => {
+        this.stock_picking_type_by_id[pt.id] = pt;
+      });
+    }
 
+    // 6) Manejo de inventario on-hand
+    if (config.display_onhand) {
+      // Tomamos el primer picking type y su ubicación por defecto
+      const firstId =
+        config.multi_stock_operation_type_ids &&
+        config.multi_stock_operation_type_ids[0];
+      const firstType = this.stock_picking_type_by_id
+        ? this.stock_picking_type_by_id[firstId]
+        : null;
+      const locId = firstType
+        ? firstType.default_location_src_id && firstType.default_location_src_id[0]
+        : null;
+      if (locId) {
+        this.stock_location_ids = [locId];
+        this.default_location_src_id = locId;
+        this._save_stock_location(loadedData["stock.location"]);
+      }
+    }
+
+    // 7) Resto de la lógica existente
+    this.product_by_barcode = {};
+    if (config.product_multi_barcode) {
+      const productsBarcode = loadedData["product.barcode"];
+      this._save_product_barcode(productsBarcode);
+    }
+    if (config.products_multi_unit) {
+      const units_price = loadedData["product.uom.price"];
+      this._save_units_price(units_price);
+    }
+    if (config.invoice_screen) {
+      const journals = loadedData["account.journal"];
+      this.journals = journals.filter(
+        (j) =>
+          j.inbound_payment_method_line_ids.length > 0 &&
+          j.outbound_payment_method_line_ids.length > 0
+      );
+      const payment_method_lines = loadedData["account.payment.method.line"];
+      this.payment_method_lines = payment_method_lines;
+    }
+    if (config.discount_customer_group && loadedData["res.partner.category"]) {
+      this.res_partner_category_by_id = {};
+      loadedData["res.partner.category"].forEach(
+        (rpc) => (this.res_partner_category_by_id[rpc.id] = rpc)
+      );
+    }
+    if (config.credit_feature) {
+      this.credit_program = loadedData["res.partner.credit.program"];
+    }
+    if (config.lot_serial_allow_scan || config.lot_serial_allow_select) {
+      this.stock_lots = loadedData["stock.lot"];
+    }
+    if (config.enable_cross_sell) {
+      this.product_cross_sell_groups = loadedData["product.cross.sell.group"];
+      this.product_cross_sell_group_by_id = {};
+      this.product_cross_sell_groups.forEach((g) => {
+        this.product_cross_sell_group_by_id[g.id] = g;
+      });
+    }
+    if (config.enable_pack_group) {
+      this.product_packs = loadedData["product.pack"];
+      this.product_pack_groups = loadedData["product.pack.group"];
+      this.product_pack_group_by_id = {};
+      this.pack_items_by_group_id = {};
+      this.pack_item_by_id = {};
+      this.product_pack_groups.forEach((g) => {
+        this.product_pack_group_by_id[g.id] = g;
+      });
+      this.product_packs.forEach((item) => {
+        this.pack_item_by_id[item.id] = item;
+        const group_id = item.group_id[0];
+        if (!this.pack_items_by_group_id[group_id]) {
+          this.pack_items_by_group_id[group_id] = [item];
+        } else {
+          this.pack_items_by_group_id[group_id].push(item);
         }
-        if (config.display_onhand) {
-            this.stock_location_ids = [loadedData["stock.picking.type"]['default_location_src_id'][0]]
-            this.default_location_src_id = loadedData["stock.picking.type"]['default_location_src_id'][0]
-            this._save_stock_location(loadedData["stock.location"])
-        }
-        this.product_by_barcode = {}
-        if (config.product_multi_barcode) {
-            const productsBarcode = loadedData["product.barcode"]
-            this._save_product_barcode(productsBarcode)
-        }
-        if (config.products_multi_unit) {
-            const units_price = loadedData["product.uom.price"]
-            this._save_units_price(units_price)
-        }
-        if (config.invoice_screen) {
-            const journals = loadedData["account.journal"]
-            this.journals = journals.filter((j) => j.inbound_payment_method_line_ids.length > 0 && j.outbound_payment_method_line_ids.length > 0)
-            const payment_method_lines = loadedData["account.payment.method.line"]
-            this.payment_method_lines = payment_method_lines
-        }
-        if (config.discount_customer_group && loadedData["res.partner.category"]) {
-            this.res_partner_category_by_id = {}
-            loadedData["res.partner.category"].forEach(rpc => this.res_partner_category_by_id[rpc.id] = rpc)
-        }
-        if (config.credit_feature) {
-            this.credit_program = loadedData["res.partner.credit.program"]
-        }
-        if (config.lot_serial_allow_scan || config.lot_serial_allow_select) {
-            this.stock_lots = loadedData["stock.lot"]
-        }
-        if (config.enable_cross_sell) {
-            this.product_cross_sell_groups = loadedData["product.cross.sell.group"]
-            this.product_cross_sell_group_by_id = {}
-            for (let i = 0; i < this.product_cross_sell_groups.length; i++) {
-                let group = this.product_cross_sell_groups[i]
-                this.product_cross_sell_group_by_id[group.id] = group
-            }
-        }
-        if (config.enable_pack_group) {
-            this.product_packs = loadedData["product.pack"]
-            this.product_pack_groups = loadedData["product.pack.group"]
-            this.product_pack_group_by_id = {}
-            this.pack_items_by_group_id = {}
-            this.pack_item_by_id = {}
-            for (let i = 0; i < this.product_pack_groups.length; i++) {
-                this.product_pack_group_by_id[this.product_pack_groups[i].id] = this.product_pack_groups[i]
-            }
-            for (let i = 0; i < this.product_packs.length; i++) {
-                let item = this.product_packs[i]
-                this.pack_item_by_id[item.id] = item
-                let group_id = item['group_id'][0]
-                if (!this.pack_items_by_group_id[group_id]) {
-                    this.pack_items_by_group_id[group_id] = [item]
-                } else {
-                    this.pack_items_by_group_id[group_id].push(item)
-                }
-            }
-        }
-        if (config.enable_multi_currency) {
-            this.currencies = loadedData["multi.res.currency"]
-            this.currency_by_id = {}
-            for (let i=0; i < this.currencies.length; i++) {
-                this.currency_by_id[this.currencies[i]['id']] = this.currencies[i]
-            }
-        }
-        if (config.enable_order_type) {
-            this.pos_order_types =  loadedData["pos.order.type"]
-        }
-        return res
-    },
+      });
+    }
+    if (config.enable_multi_currency) {
+      this.currencies = loadedData["multi.res.currency"];
+      this.currency_by_id = {};
+      this.currencies.forEach((c) => {
+        this.currency_by_id[c.id] = c;
+      });
+    }
+    if (config.enable_order_type) {
+      this.pos_order_types = loadedData["pos.order.type"];
+    }
+
+    return res;
+  },
 
     _save_units_price(units_price) {
         for (let i = 0; i < units_price.length; i++) {
